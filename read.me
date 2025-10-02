@@ -1,0 +1,119 @@
+Tu es un agent de développement full-stack chargé de livrer une application web de data-viz en production (Next.js + TypeScript). Ta mission : construire une carte interactive zoomable des consommations d’électricité en France, à partir des jeux de données Open Data d’Enedis, avec filtres, clustering, choroplèthes et export.
+
+# 🔧 Stack & contraintes
+- Framework : Next.js (App Router), TypeScript, Vite n’est pas requis.
+- UI : Tailwind CSS + shadcn/ui.
+- Carte : MapLibre GL JS (ou Leaflet si tu préfères), clustering via Supercluster.
+- Données : API Explore v2.1 Opendatasoft (domaines Enedis/ODRÉ).
+- Pas de backend lourd : toutes les requêtes data passent par des **route handlers** Next.js (/api/*) qui font proxy et ajoutent cache/quotas.
+- Performances : pagination, clustering côté client, agrégations côté API (group_by/sum).
+- Accessibilité (a11y) et responsive (desktop/tablette/mobile).
+- Langue : interface FR.
+
+# 🔑 Variables de configuration (.env.local)
+MAPTILER_API_KEY=<ta_clé>             # pour les tuiles cartographiques (ou utilise OSM libre)
+ENEDIS_BASE_URL=https://data.enedis.fr
+ODRE_BASE_URL=https://odre.opendatasoft.com
+
+# 📦 Jeux de données à utiliser (priorité ↓)
+1) "Consommation d’électricité annuelle résidentielle par adresse"  
+   id = consommation-annuelle-residentielle-par-adresse  
+   (adresses ≥ 10 logements ; “un logement = un PDL”)
+2) "Consommation d’électricité annuelle des entreprises par adresse"  
+   id = consommation-annuelle-entreprise-par-adresse  (≥ 36 kVA)
+3) Choroplèthe : "Consommation et thermosensibilité d’électricité à la maille IRIS"  
+   id = consommation-electrique-par-secteur-dactivite-iris
+4) (optionnel) Maille commune :  
+   id = consommation-electrique-par-secteur-dactivite-commune
+
+# 🗺️ Fonctionnalités carte
+- Fond de carte (MapLibre) + contrôle de zoom, plein écran, géolocalisation utilisateur.
+- **Clustering de points** pour les jeux “par adresse” (résidentiel + entreprises).  
+  - Style du cluster selon la conso agrégée du cluster (palette discrète).
+  - Popup d’un marqueur = adresse complète, année, conso (MWh), nb PDL/logements (si dispo).
+- **Choroplèthe (IRIS)** en alternative d’affichage (toggle “Points / IRIS”).  
+  - Couche polygonale colorée par MWh/PDL ou MWh total.
+  - Infobulle sur survol/clic (IRIS, commune, MWh total, PDL estimés).
+- **Filtre spatial dynamique** : ne charger que les enregistrements dans l’emprise de carte (bbox).  
+- **Timeline/slider Année** (ex : 2018 → dernier millésime) avec animation “play”.
+- **Filtres** : 
+  - Secteur (résidentiel / entreprises), 
+  - Fourchette de consommation (min/max MWh), 
+  - Commune/INSEE (recherche autosuggest), 
+  - Segment (si présent).
+- **Recherche** : champ de recherche “Commune / Code INSEE / Adresse”.
+- **Export** : CSV/GeoJSON des données filtrées visibles.
+- **Légendes** : barres de couleurs et panneaux d’aide (biais, limites des données).
+- **Mode sombre** (toggle).
+
+# 🧠 Rappel important sur la confidentialité / périmètre
+- Les PDL individuels **ne sont pas** publiés en clair. On manipule :
+  - des agrégats “par adresse” (≥ 10 logements pour résidentiel ; ≥ 36 kVA pour entreprises), assimilables à des “points d’adresses multi-PDL”,
+  - et des agrégats territoriaux (IRIS/communes).  
+- Afficher clairement cette limite dans un encart “À propos des données”.
+
+# 🔌 Intégration API (Opendatasoft Explore v2.1)
+- Endpoints génériques (ex) :  
+  `${ENEDIS_BASE_URL}/api/explore/v2.1/catalog/datasets/<dataset_id>/records?...`
+- Utiliser les paramètres : `select=`, `where=`, `group_by=`, `order_by=`, `limit`, `offset`.  
+- Filtre spatial :
+  - soit `where=within(<geo_field>, bbox([minLon, minLat, maxLon, maxLat]))`
+  - soit le paramètre `geofilter.bbox=minLat,minLon,maxLat,maxLon` si le dataset l’accepte.
+- Agrégations :
+  - Exemple points → cluster côté client (Supercluster).
+  - Exemple IRIS → agrégation côté API : `select=code_iris, sum(conso_mwh) as mwh & group_by=code_iris`.
+- Pagination : 1000/2000 par page, itérer sur `offset`.  
+- Caching : `swr` 10 min côté route handler ; revalidation sur mouvement de carte.
+
+# 📁 Structure projet (résumé)
+- /app
+  - /page.tsx (vue carte, panneaux)
+  - /api/enedis/[dataset]/route.ts (proxy → Explore v2.1, with cache & validation)
+  - /components/Map.tsx (MapLibre + couches + clustering)
+  - /components/Filters.tsx (filtres, slider année)
+  - /components/Legend.tsx, /components/Toolbar.tsx
+  - /lib/enedis.ts (helpers requêtes ODSQL, typage résultats)
+  - /lib/geo.ts (bbox, conversions, GeoJSON builders)
+- /types (schémas TS pour lignes d’enregistrements)
+
+# 🧪 Cas d’usage & critères d’acceptation
+1) **Points résidentiels (adresse)**  
+   - Je zoome sur Montpellier : les marqueurs apparaissent en clusters puis en points.  
+   - Popup d’un point : “2023 • 12 400 MWh • 250 PDL (adresse multi-logements)” + adresse.  
+   - Le filtre année met bien à jour l’affichage.
+2) **Points entreprises**  
+   - Toggle “Entreprises” affiche les points >36 kVA avec leur MWh annuel.  
+3) **Mode IRIS**  
+   - Je bascule en “Choroplèthe IRIS” : polygones colorés par MWh/PDL.  
+   - L’infobulle affiche IRIS, commune, MWh total, PDL estimés/nb sites.
+4) **Filtre spatial**  
+   - Quand je déplace la carte, l’API ne charge que l’emprise (bbox) avec cache.  
+5) **Export**  
+   - Le bouton “Exporter” me donne un CSV/GeoJSON des couches visibles/filtrées.
+6) **Robustesse**  
+   - Si l’API rate/rate-limit : message non bloquant + retry + fallback cache.
+7) **Aide & mentions**  
+   - Encarts “À propos des données” (déf. PDL, agrégation, millésimes, limites) + sources.
+
+# 🔍 Détails d’implémentation attendus
+- Détecte à l’initialisation les **noms de champs** des datasets (via endpoint “dataset info”) et mappe dynamiquement (car les champs peuvent s’appeler `conso_mwh`, `consommation`, `valeur`, etc.).  
+- Pour les jeux “par adresse”, exploiter un champ géographique (ex : `geo_point_2d`), l’adresse textuelle, l’année, la consommation en MWh et le **nombre de logements/PDL** quand fourni.  
+- Utiliser `geo_cluster()` côté API pour pré-agréger si performant, sinon clustering client.  
+- IRIS/communes : récupérer géométries (GeoJSON) via dataset associé ou via Admin Express (si déjà publié par Enedis/ODRÉ), puis joindre par code INSEE/IRIS.
+- Tous les appels réseau passent par `/api/enedis/*` (proxy Next.js) avec : 
+  - mise en cache 10 min (SWR) + entêtes `Cache-Control` et `ETag` si dispo,
+  - validation stricte des paramètres (Zod),
+  - logs d’erreurs concis (pas de fuites d’URL directes côté client).
+- UI :
+  - Panneau latéral gauche (filtres) repliable, barre d’outils en haut (mode Points/IRIS, Export, Aide, Plein écran).
+  - Infobulles soignées, légende réactive à l’échelle (quintiles).  
+  - Prévoir un “squelette” de chargement (skeletons) et états vides.
+
+# 🧾 Mentions légales (afficher dans l’app)
+- Source : Open Data d’Enedis et ODRÉ. Visualisation non contractuelle. Les PDL individuels ne sont pas diffusés ; données agrégées par adresse (seuils de confidentialité) et par territoires. Indiquer millésime.
+
+# ✅ Livrables
+- Repo complet (Next.js) + README (lancer en local et déploiement).
+- Variables d’environnement documentées.
+- Tests basiques (vitest) sur lib d’agrégation/typage.
+- Démo fonctionnelle avec jeux résidentiel/entreprise et choroplèthe IRIS.
